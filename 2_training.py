@@ -6,6 +6,10 @@ import argparse
 import os
 from models import GCNPolicy
 
+
+RED = "\033[31m"
+RESET = "\033[0m"
+
 ## ARGUMENTS OF THE SCRIPT
 parser = argparse.ArgumentParser()
 parser.add_argument("--data", 		help="number of training data", 	default=1000)
@@ -20,17 +24,24 @@ args = parser.parse_args()
 def process(model, dataloader, optimizer, type = 'fea'):
 
 	c, ei, ev, v, n_cs, n_vs, n_csm, n_vsm, cand_scores = dataloader
+ 	
+	# Convert integers to tensors
+	n_cs = tf.convert_to_tensor(n_cs, dtype=tf.int32)
+	n_vs = tf.convert_to_tensor(n_vs, dtype=tf.int32)
+	n_csm = tf.convert_to_tensor(n_csm, dtype=tf.int32)
+	n_vsm = tf.convert_to_tensor(n_vsm, dtype=tf.int32)
+    
 	batched_states = (c, ei, ev, v, n_cs, n_vs, n_csm, n_vsm)  
 
 	with tf.GradientTape() as tape:
-		logits = model(batched_states, tf.convert_to_tensor(True)) 
-		loss = tf.keras.metrics.mean_squared_error(cand_scores, logits)
+		logits = model(batched_states, training=tf.convert_to_tensor(True))
+		loss = tf.keras.losses.mse(cand_scores, logits)
 		loss = tf.reduce_mean(loss)
 	grads = tape.gradient(target=loss, sources=model.variables)
 	optimizer.apply_gradients(zip(grads, model.variables))
 	
-	logits = model(batched_states, tf.convert_to_tensor(False)) 
-	loss = tf.keras.metrics.mean_squared_error(cand_scores, logits)
+	logits = model(batched_states, training=tf.convert_to_tensor(False))
+	loss = tf.keras.losses.mse(cand_scores, logits)
 	loss = tf.reduce_mean(loss)
 
 	return_loss = loss.numpy()
@@ -98,62 +109,74 @@ tf.random.set_seed(seed)
 gpu_index = int(args.gpu)
 tf.config.set_soft_device_placement(True)
 gpus = tf.config.list_physical_devices('GPU')
+
+if gpu_index >= len(gpus):
+    mesg = f"GPU index {gpu_index} is out of range. Available GPUs: {len(gpus)}"
+    print(f"{RED}{mesg}{RESET}")
+    exit(1)
+
 tf.config.set_visible_devices(gpus[gpu_index], 'GPU')
 tf.config.experimental.set_memory_growth(gpus[gpu_index], True)
 
 with tf.device("GPU:"+str(gpu_index)):
+	try:
+		### LOAD DATASET INTO GPU ###
+		varFeatures = tf.constant(varFeatures, dtype=tf.float32)
+		conFeatures = tf.constant(conFeatures, dtype=tf.float32)
+		edgFeatures = tf.constant(edgFeatures, dtype=tf.float32)
+		edgIndices = tf.constant(edgIndices, dtype=tf.int32)
+		edgIndices = tf.transpose(edgIndices)
+		labels = tf.constant(labels, dtype=tf.float32)
+		train_data = (conFeatures, edgIndices, edgFeatures, varFeatures, n_Cons, n_Vars, n_Cons_small, n_Vars_small, labels)
 
-	### LOAD DATASET INTO GPU ###
-	varFeatures = tf.constant(varFeatures, dtype=tf.float32)
-	conFeatures = tf.constant(conFeatures, dtype=tf.float32)
-	edgFeatures = tf.constant(edgFeatures, dtype=tf.float32)
-	edgIndices = tf.constant(edgIndices, dtype=tf.int32)
-	edgIndices = tf.transpose(edgIndices)
-	labels = tf.constant(labels, dtype=tf.float32)
-	train_data = (conFeatures, edgIndices, edgFeatures, varFeatures, n_Cons, n_Vars, n_Cons_small, n_Vars_small, labels)
-
-	### INITIALIZATION ###
-	if args.type == "sol":
-		model = GCNPolicy(embSize, nConsF, nEdgeF, nVarF, isGraphLevel = False)
-	else:
-		model = GCNPolicy(embSize, nConsF, nEdgeF, nVarF)
-	optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
-	loss_init,_,_ = process(model, train_data, optimizer, type = args.type)
-	epoch = 0
-	count_restart = 0
-	err_best = 2
-	loss_best = 1e10
-	
-	### MAIN LOOP ###
-	while epoch <= max_epochs:
-		train_loss,errs,err_rate = process(model, train_data, optimizer, type = args.type)
-			
-		if args.type == "fea":
-			print(f"EPOCH: {epoch}, TRAIN LOSS: {train_loss}, ERRS: {errs}, ERRATE: {err_rate}")
-			if err_rate < err_best:
-				model.save_state(model_path)
-				print("model saved to:", model_path)
-				err_best = err_rate
+		### INITIALIZATION ###
+		if args.type == "sol":
+			model = GCNPolicy(embSize, nConsF, nEdgeF, nVarF, isGraphLevel = False)
 		else:
-			print(f"EPOCH: {epoch}, TRAIN LOSS: {train_loss}")
-			if train_loss < loss_best:
-				model.save_state(model_path)
-				print("model saved to:", model_path)
-				loss_best = train_loss
-		
-		## If the loss does not go down, we restart the training to re-try another initialization.
-		if epoch == 200 and count_restart < 3 and (train_loss > loss_init * 0.8 or (err_rate != None and err_rate > 0.5)):
-			print("Fail to reduce loss, restart...")
 			model = GCNPolicy(embSize, nConsF, nEdgeF, nVarF)
-			optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
-			loss_init,_,_ = process(model, train_data, optimizer, type = args.type)
-			epoch = 0
-			count_restart += 1
+		optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
+		loss_init,_,_ = process(model, train_data, optimizer, type = args.type)
+		epoch = 0
+		count_restart = 0
+		err_best = 2
+		loss_best = 1e10
+		
+		### MAIN LOOP ###
+		while epoch <= max_epochs:
+			train_loss,errs,err_rate = process(model, train_data, optimizer, type = args.type)
+				
+			if args.type == "fea":
+				print(f"EPOCH: {epoch}, TRAIN LOSS: {train_loss}, ERRS: {errs}, ERRATE: {err_rate}")
+				if err_rate < err_best:
+					model.save_state(model_path)
+					print("model saved to:", model_path)
+					err_best = err_rate
+			else:
+				print(f"EPOCH: {epoch}, TRAIN LOSS: {train_loss}")
+				if train_loss < loss_best:
+					model.save_state(model_path)
+					print("model saved to:", model_path)
+					loss_best = train_loss
 			
-		epoch += 1
-	
-	print("Count of restart:", count_restart)
-	model.summary()
+			## If the loss does not go down, we restart the training to re-try another initialization.
+			if epoch == 200 and count_restart < 3 and (train_loss > loss_init * 0.8 or (err_rate != None and err_rate > 0.5)):
+				print("Fail to reduce loss, restart...")
+				model = GCNPolicy(embSize, nConsF, nEdgeF, nVarF)
+				optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
+				loss_init,_,_ = process(model, train_data, optimizer, type = args.type)
+				epoch = 0
+				count_restart += 1
+				
+			epoch += 1
+		
+		print("Count of restart:", count_restart)
+		model.summary()
+	except Exception as e:
+		# # Define the error message
+		error_message = f"An error occurred while training the model: {e}"
+		print(f"{RED}{error_message}{RESET}")
+  
+		raise e
 	
 	
 

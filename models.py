@@ -10,7 +10,7 @@ class BipartiteGraphConvolution(K.Model):
 	"""
 
 	def __init__(self, emb_size, activation, initializer, right_to_left=False):
-		super().__init__()
+		super(BipartiteGraphConvolution,self).__init__()
 		
 		self.emb_size = emb_size
 		self.activation = activation
@@ -24,6 +24,9 @@ class BipartiteGraphConvolution(K.Model):
 			K.layers.Dense(units=self.emb_size, activation=None, kernel_initializer=self.initializer),
 		])
 		self.feature_module_edge = K.Sequential([
+			K.layers.Dense(units=self.emb_size, activation=None, use_bias=True, kernel_initializer=self.initializer),
+			K.layers.Activation(self.activation),
+			K.layers.Dense(units=self.emb_size, activation=None, kernel_initializer=self.initializer),
 		])
 		self.feature_module_right = K.Sequential([
 			K.layers.Dense(units=self.emb_size, activation=None, use_bias=False, kernel_initializer=self.initializer),
@@ -98,7 +101,7 @@ class GCNPolicy(K.Model):
 	"""
 
 	def __init__(self, embSize, nConsF, nEdgeF, nVarF, isGraphLevel = True):
-		super().__init__()
+		super(GCNPolicy,self).__init__()
 
 		self.emb_size = embSize
 		self.cons_nfeats = nConsF
@@ -118,6 +121,7 @@ class GCNPolicy(K.Model):
 
 		# EDGE EMBEDDING
 		self.edge_embedding = K.Sequential([
+			K.layers.Dense(units=self.emb_size, activation=self.activation, kernel_initializer=self.initializer),
 		])
 
 		# VARIABLE EMBEDDING
